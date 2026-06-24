@@ -10,6 +10,10 @@ import audioop
 import threading
 from naoqi import ALProxy, ALModule, ALBroker
 
+# ============================================================
+# CONFIG
+# ============================================================
+
 PEPPER_IP   = "10.235.146.197"
 PEPPER_PORT = 9559
 PC_IP       = "10.235.146.216"
