@@ -210,7 +210,7 @@ LONG_BEHAVIORS = {
 # CONFIG
 # ============================================================
 
-GROQ_API_KEY      = ""
+GROQ_API_KEY      = "INSERT API HERE"
 PC_PORT           = 12345
 PEPPER_SSH_USER   = "nao"
 PEPPER_SSH_PASS   = "nao"
