@@ -10,13 +10,9 @@ import audioop
 import threading
 from naoqi import ALProxy, ALModule, ALBroker
 
-# ============================================================
-# CONFIG
-# ============================================================
-
-PEPPER_IP   = "10.235.146.197"
+PEPPER_IP   = "10.167.8.197"
 PEPPER_PORT = 9559
-PC_IP       = "10.235.146.216"
+PC_IP       = "10.167.8.216"
 PC_PORT     = 12345
 
 ACTIVATION_THRESHOLD = 1700
@@ -36,6 +32,28 @@ leds    = ALProxy("ALLeds",           PEPPER_IP, PEPPER_PORT)
 tablet  = ALProxy("ALTabletService",  PEPPER_IP, PEPPER_PORT)
 
 anim_config = {"bodyLanguageMode": "contextual"}
+
+# NAOqi ALTextToSpeech language names. These must exactly match what
+# tts.getAvailableLanguages() reports on your robot (usually "English" and
+# "Chinese" for Mandarin, but some images use "Mandarin" instead — check
+# once with print(tts.getAvailableLanguages()) if setLanguage errors out).
+DEFAULT_LANGUAGE = "English"
+_current_tts_language = None  # tracked so we don't call setLanguage needlessly
+
+
+def set_pepper_language(language_name):
+    """Switch Pepper's TTS/AnimatedSpeech voice language if it isn't already set."""
+    global _current_tts_language
+    if isinstance(language_name, unicode):
+        language_name = language_name.encode("utf-8")
+    if language_name == _current_tts_language:
+        return
+    try:
+        tts.setLanguage(language_name)
+        _current_tts_language = language_name
+        print("TTS language set to: " + language_name)
+    except Exception as e:
+        print("Could not set TTS language to '" + language_name + "': " + str(e))
 
 
 # ============================================================
@@ -245,10 +263,18 @@ def wait_for_done(sock):
 # SPEECH
 # ============================================================
 
-def pepper_speak(text):
+def pepper_speak(text, language=DEFAULT_LANGUAGE):
+    # Normalize to plain str up front — language may arrive as a unicode
+    # object (split from the decoded socket payload), and mixing unicode
+    # with utf-8-encoded str bytes later causes ascii decode errors, and
+    # NAOqi's setLanguage() rejects unicode outright.
+    if isinstance(language, unicode):
+        language = language.encode("utf-8")
+
+    set_pepper_language(language)
     if isinstance(text, unicode):
         text = text.encode("utf-8")
-    print("Pepper says: " + text)
+    print("Pepper says (" + language + "): " + text)
     set_tablet_status("speaking")
     try:
         anim.say(text, anim_config)   # blocking — returns when speech finishes
@@ -328,26 +354,35 @@ def main():
                 continue
 
             if response.startswith("TEXT:"):
-                text = response[len("TEXT:"):]
+                payload = response[len("TEXT:"):]
+                if "|" in payload:
+                    language, text = payload.split("|", 1)
+                else:
+                    # Backward-compatible fallback if the server didn't tag a language
+                    language, text = DEFAULT_LANGUAGE, payload
 
-                if "goodbye" in text.lower():
-                    pepper_speak("Goodbye! It was nice talking to you.")
+                if "goodbye" in text.lower() or u"再见" in text:
+                    pepper_speak("Goodbye! It was nice talking to you.", DEFAULT_LANGUAGE)
                     break
 
-                pepper_speak(text)
+                pepper_speak(text, language)
                 time.sleep(0.4)
 
             elif response.startswith("BEHAVIOR:") and behavior_sock is not None:
                 payload = response[len("BEHAVIOR:"):]
-                if "|" in payload:
-                    _, spoken = payload.split("|", 1)
+                parts = payload.split("|", 2)
+                if len(parts) == 3:
+                    action_name, language, spoken = parts
+                elif len(parts) == 2:
+                    action_name, spoken = parts
+                    language = DEFAULT_LANGUAGE
                 else:
-                    spoken = "OK, here we go!"
+                    action_name, spoken, language = parts[0], "OK, here we go!", DEFAULT_LANGUAGE
 
                 leds.fadeRGB("FaceLeds", 0xFF8C00, 0.3)
                 set_tablet_status("acting")
 
-                pepper_speak(spoken)
+                pepper_speak(spoken, language)
 
                 # Block mic until PC sends DONE (behavior finished)
                 wait_for_done(behavior_sock)

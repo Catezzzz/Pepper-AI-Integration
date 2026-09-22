@@ -22,12 +22,14 @@ BEHAVIORS = {
 
     # --- DANCES ---
     "dance": [
-        "danceofthereedflutes",             # full behavior with music ✅
+        # "danceofthereedflutes",             # full behavior with music ✅
         "arcadia/full_launcher",            # full behavior with music ✅
-        "animations/Stand/Waiting/FunnyDancer_1",   # motion only (fallback)
-        "animations/Stand/Waiting/AirGuitar_1",
-        "animations/Stand/Waiting/Bandmaster_1",
-        "animations/Stand/Waiting/Robot_1",
+        "kuroneko",
+        "hungarian",
+        # "animations/Stand/Waiting/FunnyDancer_1",   # motion only (fallback)
+        # "animations/Stand/Waiting/AirGuitar_1",
+        # "animations/Stand/Waiting/Bandmaster_1",
+        # "animations/Stand/Waiting/Robot_1",
     ],
 
     # --- GREETINGS ---
@@ -208,11 +210,60 @@ LONG_BEHAVIORS = {
 # CONFIG
 # ============================================================
 
-GROQ_API_KEY      = "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"
+GROQ_API_KEY      = ""
 PC_PORT           = 12345
 PEPPER_SSH_USER   = "nao"
 PEPPER_SSH_PASS   = "nao"
-PEPPER_IP_FOR_SSH = "10.99.19.197"
+PEPPER_IP_FOR_SSH = "10.167.8.197"
+
+# ============================================================
+# LANGUAGE STATE
+# ============================================================
+# "English" / "Chinese" are the NAOqi ALTextToSpeech language names Pepper
+# will be told to switch to. The codes are what Google's speech_recognition
+# needs to transcribe correctly.
+LANG_CODES = {
+    "English": "en-US",
+    "Chinese": "zh-CN",
+}
+
+# Phrases (checked as lowercase/substring) that switch the session language.
+# Add to these lists if you want more trigger phrases.
+SWITCH_TO_CHINESE = ["speak chinese", "in chinese", "switch to chinese", "speak mandarin", "中文", "讲中文", "说中文", "speak mandarin", "in mandarin"]
+SWITCH_TO_ENGLISH = ["speak english", "in english", "switch to english", "讲英文", "说英文", "英文"]
+
+SWITCH_CONFIRM_TEXT = {
+    "Chinese": "好的,我现在讲中文。",
+    "English": "Okay, I'll speak English now.",
+}
+
+APOLOGY_TEXT = {
+    "Chinese": "抱歉,我没有听清楚,你可以再说一次吗?",
+    "English": "Sorry, I could not understand that. Could you please repeat?",
+}
+
+ERROR_TEXT = {
+    "Chinese": "抱歉,出了一点问题。",
+    "English": "Sorry, something went wrong.",
+}
+
+# Current session language — shared across connections since this server
+# handles one Pepper session at a time. Guard with a lock since
+# handle_connection can run in more than one thread at once (behavior DONE
+# callback thread).
+current_language = "English"
+_lang_lock = threading.Lock()
+
+
+def get_current_language():
+    with _lang_lock:
+        return current_language
+
+
+def set_current_language(lang):
+    global current_language
+    with _lang_lock:
+        current_language = lang
 
 # ============================================================
 # GROQ CLIENT + CONVERSATION HISTORY
@@ -225,7 +276,10 @@ conversation_history = [
         "role": "system",
         "content": (
             "You are Pepper, a friendly humanoid robot assistant. "
-            "Keep responses under 2 sentences.\n\n"
+            "Keep complex responses under 2 sentences, and simple responses brief. "
+            "Put commas in your sentences but not too much."
+            "You are bilingual in English and Mandarin Chinese and can hold a "
+            "full conversation in either language.\n\n"
             "You are based on the Pepper robot developed by SoftBank Robotics / Aldebaran but you have some limitation."
             "You are only able to provide company by using conversastion."
             "You do not have the capability to move around until you receive an upgrade."
@@ -273,6 +327,15 @@ conversation_history = [
             "space - space, rocket, magic\n"
             "fitness - exercise, workout\n\n"
             "If no physical action is needed, reply with plain conversational text only."
+            "The What Matters app is a person-centred dementia care mobile application that was co-designed with patients, healthcare staff, family partners, "
+            "researchers, and students to improve the quality of person-centred care provided to people living with dementia in LTC and hospital settings. "
+            "The app does so by facilitating tailored digital support from family partners to patients with dementia, allowing families to easily build personalised "
+            "profiles for their loved ones. These profiles can include About Me sections detailing likes and interests, as well as galleries full of meaningful media "
+            "to bring comfort to the patient, which can include family photographs, personal videos, or direct links to preferred streaming content such as "
+            "Spotify, Netflix, and YouTube. These digital resources provided by the app become especially important when family members are unavailable to "
+            "provide assistance during high-stress situations involving people with dementia, for example at night or during working hours. "
+            "The app also supports multiple resident profiles together in one consolidated interface, thereby making it very easy for staff to provide optimal person-centred care. \n \n"
+            "The UBC IDEA (Innovation in Dementia and Aging) Lab, founded by Dr. Lillian Hung, is an interdisciplinary research hub dedicated to advancing care for older adults and individuals living with dementia through patient-oriented research and technological innovation. By bringing together students, researchers, health system planners, and patient partners, the lab fosters intergenerational collaboration where the curiosity of students meets the lived experiences of older adults. Their work emphasizes the co-design of healthcare solutions—often exploring the role of new technologies like robotics and virtual reality—while upholding core values of inclusivity, diversity, equity, and accessibility to improve patient outcomes and support caregivers."
         )
     }
 ]
@@ -281,7 +344,12 @@ conversation_history = [
 # AUDIO TRANSCRIPTION
 # ============================================================
 
-def transcribe_audio(audio_data):
+def transcribe_audio(audio_data, language_code="en-US"):
+    """
+    language_code: a Google STT locale like "en-US" or "zh-CN". This must
+    match the language Pepper's mic actually captured, since recognize_google
+    does not auto-detect the spoken language.
+    """
     temp_file = os.path.join(tempfile.gettempdir(), "pepper_input.wav")
     with open(temp_file, "wb") as f:
         f.write(audio_data)
@@ -292,8 +360,8 @@ def transcribe_audio(audio_data):
 
     for attempt in range(3):
         try:
-            text = recognizer.recognize_google(audio)
-            print(f"[STT] User said: {text}")
+            text = recognizer.recognize_google(audio, language=language_code)
+            print(f"[STT] ({language_code}) User said: {text}")
             return text
         except sr.UnknownValueError:
             print("[STT] Could not understand audio.")
@@ -309,14 +377,26 @@ def transcribe_audio(audio_data):
 # GROQ LLM
 # ============================================================
 
-def ask_groq(user_input):
+def ask_groq(user_input, language_name="English"):
     conversation_history.append({"role": "user", "content": user_input})
+
+    # A one-off reminder appended just for this request (not saved into the
+    # persistent history) so the model replies in the currently active
+    # session language without needing to re-ask every time.
+    lang_reminder = {
+        "English": "Reminder: respond in English only.",
+        "Chinese": "提醒:请只用中文回复。",
+    }.get(language_name, "Reminder: respond in English only.")
+
+    messages_for_request = conversation_history + [
+        {"role": "system", "content": lang_reminder}
+    ]
 
     for attempt in range(3):
         try:
             response = client.chat.completions.create(
                 model="llama-3.3-70b-versatile",
-                messages=conversation_history,
+                messages=messages_for_request,
                 max_tokens=150
             )
             reply = response.choices[0].message.content.strip()
@@ -412,10 +492,13 @@ def handle_connection(conn):
     """
     Protocol
     --------
-    All replies     ->  "TEXT:<spoken text>"
-    Long behavior   ->  "BEHAVIOR:<action>|<spoken text>"
+    All replies     ->  "TEXT:<lang_code>|<spoken text>"
+    Long behavior   ->  "BEHAVIOR:<action>|<lang_code>|<spoken text>"
                         ... behavior runs in background ...
                         "DONE"   sent on same conn when behavior ends
+
+    <lang_code> is a NAOqi ALTextToSpeech language name understood by
+    Pepper's listener, e.g. "English" or "Chinese".
     """
     close_conn = True
 
@@ -432,15 +515,35 @@ def handle_connection(conn):
             f.write(audio_data)
         print(f"[SERVER] Saved debug audio: {debug_filename}")
 
-        # Transcribe
-        user_text = transcribe_audio(audio_data)
+        # Transcribe using whatever language is currently active for the
+        # session (defaults to English until the user switches).
+        session_language = get_current_language()
+        stt_code = LANG_CODES[session_language]
+        user_text = transcribe_audio(audio_data, language_code=stt_code)
 
         if user_text is None:
-            conn.sendall("TEXT:Sorry, I could not understand that. Could you please repeat?".encode("utf-8"))
+            apology = APOLOGY_TEXT[session_language]
+            conn.sendall(f"TEXT:{session_language}|{apology}".encode("utf-8"))
             return
 
-        # LLM
-        raw_reply = ask_groq(user_text)
+        # Check for an explicit language-switch command before going to the LLM.
+        lower_text = user_text.lower()
+        if any(p in lower_text or p in user_text for p in SWITCH_TO_CHINESE):
+            set_current_language("Chinese")
+            confirm = SWITCH_CONFIRM_TEXT["Chinese"]
+            conn.sendall(f"TEXT:Chinese|{confirm}".encode("utf-8"))
+            print("[SERVER] Session language switched to Chinese.")
+            return
+
+        if any(p in lower_text or p in user_text for p in SWITCH_TO_ENGLISH):
+            set_current_language("English")
+            confirm = SWITCH_CONFIRM_TEXT["English"]
+            conn.sendall(f"TEXT:English|{confirm}".encode("utf-8"))
+            print("[SERVER] Session language switched to English.")
+            return
+
+        # LLM — tell it which language to answer in
+        raw_reply = ask_groq(user_text, language_name=session_language)
 
         try:
             clean  = re.sub(r"```[a-z]*|```", "", raw_reply).strip()
@@ -463,7 +566,7 @@ def handle_connection(conn):
                     finally:
                         conn.close()
 
-                msg = f"BEHAVIOR:{action}|{response_text}"
+                msg = f"BEHAVIOR:{action}|{session_language}|{response_text}"
                 conn.sendall(msg.encode("utf-8"))
                 print(f"[SERVER] Sent: {msg}")
 
@@ -482,21 +585,22 @@ def handle_connection(conn):
                     args=(action,),
                     daemon=True
                 ).start()
-                conn.sendall(f"TEXT:{response_text}".encode("utf-8"))
+                conn.sendall(f"TEXT:{session_language}|{response_text}".encode("utf-8"))
                 print(f"[SERVER] Sent TEXT: {response_text}")
 
             else:
-                conn.sendall(f"TEXT:{response_text}".encode("utf-8"))
+                conn.sendall(f"TEXT:{session_language}|{response_text}".encode("utf-8"))
                 print(f"[SERVER] Sent TEXT: {response_text}")
 
         except (json.JSONDecodeError, ValueError):
-            conn.sendall(f"TEXT:{raw_reply}".encode("utf-8"))
+            conn.sendall(f"TEXT:{session_language}|{raw_reply}".encode("utf-8"))
             print(f"[SERVER] Sent TEXT: {raw_reply}")
 
     except Exception as e:
         print(f"[SERVER] Connection error: {e}")
         try:
-            conn.sendall("TEXT:Sorry, something went wrong.".encode("utf-8"))
+            fallback_lang = get_current_language()
+            conn.sendall(f"TEXT:{fallback_lang}|{ERROR_TEXT[fallback_lang]}".encode("utf-8"))
         except Exception:
             pass
         close_conn = True
